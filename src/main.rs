@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use structopt::StructOpt;
 
 use neks::ines::Cartridge;
-use neks::ines::CPU;
+use neks::cpu::CPU;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "neks", about = "NES emulator")]
@@ -24,5 +24,6 @@ fn main() {
     println!("Data dump: {:?}", s);
 
     println!("Initializing CPU");
-    neks::cpu::CPU::init();
+    let cpu = CPU::new();
+    cpu.run();
 }

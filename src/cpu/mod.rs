@@ -5,13 +5,21 @@ pub struct Register8(u8);
 pub struct CPU {
     A: Register8,
     X: Register8,
-    Y: Register8
+    Y: Register8,
     PC: Register16,
 }
 
 impl CPU {
-    pub fn init() -> () {
-        let cpu = Self{A: 0, X:0, Y:0, PC: 0};
+    pub fn new() -> Self {
+        Self {
+            A: Register8(0), 
+            X: Register8(0), 
+            Y: Register8(0), 
+            PC: Register16(0),
+        }
+    }
+
+    pub fn run(&self) -> () {
         loop {}
     }
 }
