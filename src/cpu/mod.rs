@@ -1,6 +1,7 @@
 use crate::ines::Cartridge;
 
 pub mod registers;
+pub mod opcodes;
 pub use registers::*;
 
 #[allow(non_snake_case)]
@@ -29,7 +30,11 @@ impl CPU {
     pub fn execute(&mut self, instruction: u8) {
         match instruction {
             0x00 => println!("break"),
-            0x01 => println!("ora izx 6"),
+            0x01 => println!("ora in x"),
+            0x05 => println!("ora z x"),
+            0x06 => println!("asl z"),
+            0x08 => println!("php"),
+            0x09 => println!("ora imm"),
             _ => println!("Unimplemented"),
         }
     }
