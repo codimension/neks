@@ -24,6 +24,6 @@ fn main() {
     println!("Data dump: {:?}", s);
 
     println!("Initializing CPU");
-    let cpu = CPU::new();
+    let mut cpu = CPU::new(c);
     cpu.run();
 }
