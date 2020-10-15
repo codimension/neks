@@ -3,7 +3,8 @@ const VERSION: i64 = 1;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
-use neks::ines::Cartridge;
+use neks::ines::RomFileParser;
+// TODO: Create type within ines for this. User of the emulation lib shouldn't have to know about nom
 use neks::cpu::CPU;
 
 #[derive(Debug, StructOpt)]
@@ -19,11 +20,17 @@ fn main() {
     let opt = CommandLineOptions::from_args();
     println!("Found file: {:?}", opt.input);
 
-    let c = Cartridge::read(opt.input).expect("Couldn't open the requested cartridge");
-    let s = Vec::from(&c.data[0..256]);
-    println!("Data dump: {:?}", s);
-
-    println!("Initializing CPU");
-    let mut cpu = CPU::init(c);
-    cpu.run();
+    let io_result = RomFileParser::load(opt.input);
+    match io_result {
+        Ok(parser) => match parser.parse() {
+            Ok((_, cartridge)) => {
+                println!("Initializing CPU");
+                println!("PRG ROM: {:x?}", &cartridge.prg_rom_data[0..256]);
+                let mut cpu = CPU::init(cartridge);
+                cpu.run();
+            },
+            Err(err) => println!("Couldn't parse the cartridge file: {}", err),
+        },
+        Err(e) => println!("IO error: {}", e),
+    }
 }

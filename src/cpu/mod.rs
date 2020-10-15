@@ -13,8 +13,6 @@ use instructions::AddressMode::*;
 use instructions::Instruction::*;
 use alu::ALU;
 
-const STACK_BEGIN: u8 = 0b100; // One above 0xff (empty stack)
-
 #[allow(non_snake_case)]
 pub struct CPU {
     registers: Registers,
@@ -27,11 +25,14 @@ pub struct CPU {
     clock: u16,
     address_line: u16,
     is_running: bool,
+
+    opcode: u8,
+    next_opcode: u8,
 }
 
 impl CPU {
     pub fn init(cartridge: Cartridge) -> Self {
-        Self {
+        let mut cpu = Self {
             registers: Registers::init(),
             PC: 0,
 
@@ -42,21 +43,62 @@ impl CPU {
 
             address_line: 0,
             is_running: false,
-        }
+
+            opcode: 0,
+            next_opcode: 0,
+        };
+
+        // Load cartridge into locations 0x8000 -> 0xffff
+        cpu.memory.load_cartridge(&cpu.cartridge);
+
+        // Location of the so-called reset vector
+        let low = cpu.memory.read_byte(0xfffc);
+        let high = cpu.memory.read_byte(0xfffd);
+        cpu.PC = ((high as u16) << 8) | (low as u16);
+
+        cpu
     }
 
     pub fn run(&mut self) -> () {
         self.is_running = true;
+        println!("A: {}, S: {}, X: {}, Y: {},",
+                self.registers.A,
+                self.registers.S,
+                self.registers.X,
+                self.registers.Y
+            );
         while self.is_running {
-            let opcode = self.next();
-            let instruction = instructions::decode(opcode);
+            self.opcode = self.next();
+            // The 6502 always read two bytes at a time.
+            self.next_opcode = self.next();
+            println!("{:x} {:x}", self.opcode, self.next_opcode);
+            println!("{:x}", self.PC);
+            let instruction = instructions::decode(self.opcode);
+            println!("{:x}> {:?}", self.PC, instruction);
             self.execute(instruction);
+            println!("A: {}, S: {}, X: {}, Y: {},",
+                self.registers.A,
+                self.registers.S,
+                self.registers.X,
+                self.registers.Y
+            );
+            println!()
         }
     }
 
     #[inline]
     pub fn tick(&mut self) {
         self.clock += 1;
+    }
+
+    #[inline]
+    /// For one byte instructions, set the counter back
+    /// The actual NES CPU always fetches the next instruction, but for the one byte instructions,
+    /// doesn't throw it away
+    /// When we come to timing, I might change how this works (to require 2 byte instructions that don't use
+    /// the operand to explicitly throw it away)
+    fn prev(&mut self) -> () {
+        self.PC -= 1;
     }
 
     #[inline]
@@ -121,6 +163,30 @@ impl CPU {
                 self.load_alu_input_b(address_mode);
                 self.do_accumulator_arithmetic(alu::Op::And);
             },
+            ASL(address_mode) => {
+                self.load_alu_input_a(address_mode);
+                let (value, flags) = self.alu.do_arithmetic(alu::Op::Asl);
+                match address_mode {
+                    Accumulator => self.registers.A = value,
+                    _ => self.memory.write_byte(self.address_line, value),
+                }
+                self.registers.P = flags;
+            },
+            BCC => {
+                if !self.registers.P.contains(Flags::C) {
+                    self.branch();
+                }
+            },
+            BCS => {
+                if self.registers.P.contains(Flags::C) {
+                    self.branch();
+                }
+            }
+            BEQ => {
+                if self.registers.P.contains(Flags::Z) {
+                    self.branch();
+                }
+            },
             BIT(address_mode) => {
                 // Do an and between A and the contents of memory
                 // The idea is that A contains a mask
@@ -168,6 +234,7 @@ impl CPU {
             },
             CLR(flag) => {
                 self.registers.P.remove(flag);
+                self.prev(); // One byte instruction
             },
             CMP(address_mode) => {
                 self.alu.input_a = self.registers.A;
@@ -245,6 +312,14 @@ impl CPU {
             LDY(address_mode) => {
                 self.registers.Y = self.load(address_mode);
             },
+            LSR(address_mode) => {
+                self.load_alu_input_a(address_mode);
+                self.alu.do_arithmetic(alu::Op::Lsr);
+                match address_mode {
+                    Accumulator => self.registers.A = self.alu.output,
+                    _ => self.memory.write_byte(self.address_line, self.alu.output),
+                }
+            },
             ORA(address_mode) => {
                 self.load_alu_input_b(address_mode);
                 self.do_accumulator_arithmetic(alu::Op::Or);
@@ -267,13 +342,19 @@ impl CPU {
             ROL(address_mode) => {
                 self.load_alu_input_a(address_mode);
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Rol);
-                self.memory.write_byte(self.address_line, value);
+                match address_mode {
+                    Accumulator => self.registers.A = value,
+                    _ => self.memory.write_byte(self.address_line, value),
+                }
                 self.registers.P = flags;
             },
             ROR(address_mode) => {
                 self.load_alu_input_a(address_mode);
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Ror);
-                self.memory.write_byte(self.address_line, value);
+                match address_mode {
+                    Accumulator => self.registers.A = value,
+                    _ => self.memory.write_byte(self.address_line, value),
+                }
                 self.registers.P = flags;
             },
             RTI => {
@@ -291,6 +372,7 @@ impl CPU {
             },
             SET(flag) => {
                 self.registers.P.insert(flag);
+                self.prev(); // One byte instruction
             },
             STA(address_mode) => {
                 self.store(address_mode, self.registers.A);
@@ -303,21 +385,27 @@ impl CPU {
             },
             TAX => {
                 self.registers.X = self.registers.A;
+                self.prev(); // One byte instruction
             },
             TAY => {
                 self.registers.Y = self.registers.A;
+                self.prev(); // One byte instruction
             },
             TSX => {
                 self.registers.X = self.registers.S;
+                self.prev(); // One byte instruction
             },
             TXA => {
                 self.registers.A = self.registers.X;
+                self.prev(); // One byte instruction
             },
             TXS => {
                 self.registers.S = self.registers.X;
+                self.prev(); // One byte instruction
             },
             TYA => {
                 self.registers.A = self.registers.Y;
+                self.prev(); // One byte instruction
             }
         }
     }
@@ -341,81 +429,116 @@ impl CPU {
     #[inline]
     fn push(&mut self, value: u8) {
         self.memory.write_byte(self.registers.S as u16, value);
-        self.registers.S -= 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Dec);
+        self.registers.S = self.alu.output;
     }
 
     fn push16(&mut self, value: u16) {
         self.memory.write_byte(self.registers.S as u16, (value >> 8).try_into().unwrap());
-        self.registers.S -= 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Dec);
+        self.registers.S = self.alu.output;
         self.memory.write_byte(self.registers.S as u16, (value & 0xff).try_into().unwrap());
-        self.registers.S -= 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Dec);
+        self.registers.S = self.alu.output;
     }
 
     #[inline]
     fn pull(&mut self) -> u8 {
-        self.registers.S += 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Inc);
+        self.registers.S = self.alu.output;
         self.memory.read_byte(self.registers.S as u16)
     }
 
     fn pull16(&mut self) -> u16 {
-        self.registers.S += 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Inc);
+        self.registers.S = self.alu.output;
         let low = self.memory.read_byte(self.registers.S as u16);
-        self.registers.S += 1;
+        self.alu.input_a = self.registers.S;
+        self.alu.do_arithmetic(alu::Op::Inc);
+        self.registers.S = self.alu.output;
         let high = self.memory.read_byte(self.registers.S as u16);
         ((high as u16) << 8) | (low as u16)
     }
 
     #[inline]
     fn store(&mut self, address_mode: AddressMode, value: u8) {
-        self.calculate_address(address_mode);
-        self.memory.write_byte(self.address_line, value);
+
+        match address_mode {
+            Accumulator => self.registers.A = value,
+            Immediate   => panic!("Attempt to store to an immediate operand!"),
+            _ => {        
+                self.calculate_address(address_mode);
+                self.memory.write_byte(self.address_line, value);
+            },
+        }
     }
 
     #[inline]
     fn load(&mut self, address_mode: AddressMode) -> u8 {
-        self.calculate_address(address_mode);
-        self.memory.read_byte(self.address_line)
+        match address_mode {
+            Accumulator => self.registers.A,
+            Immediate   => self.next_opcode,
+            _ => {        
+                self.calculate_address(address_mode);
+                self.memory.read_byte(self.address_line)
+            },
+        }
     }
 
     #[inline]
     fn calculate_address(&mut self, address_mode: AddressMode) {
         match address_mode {
+            Accumulator => {
+                panic!("Tried to calculate memory address for an accumulator instruction")
+            },
             Immediate => {
                 // The value to use is the operand, no memory load is required
-                panic!("Internal processor error: tried to do a load with Immediate value")
-            },
-            Implied => {
-                // The value to use is taken from a register, depends on instruction
-                panic!("Internal processor error: tried to do a load with Implied value")
+                panic!("Tried to calculate memory address for an immediate operand")
             },
             ZeroPage => {
                 // The operand for a Zero Page instruction gives the LSB of the memory location to load
                 // The MSB is zero, so that the memory location loaded is in the 'zero page'
-                self.address_line = self.next() as u16;
+                self.address_line = self.next_opcode as u16;
             },
             ZeroPageX => {
                 // Take the zero page address given by the operand and add the value of the X register to it
                 // This result of this calculation is wrapping, so that if the value is greater than 0xff then
                 // any bits in the most significant byte will be zeroised so that the address remains a zero page one
-                self.address_line = self.next().wrapping_add(self.registers.X) as u16;
+                self.address_line = self.next_opcode.wrapping_add(self.registers.X) as u16;
             },
             ZeroPageY => {
                 // Take the zero page address given by the operand and add the value of the Y register to it
                 // This result of this calculation is wrapping, so that if the value is greater than 0xff then
                 // any bits in the most significant byte will be zeroised so that the address remains a zero page one
-                self.address_line = self.next().wrapping_add(self.registers.Y) as u16;
+                self.address_line = self.next_opcode.wrapping_add(self.registers.Y) as u16;
             },
             Relative => {
                 // TODO: This is wrong. What actually happens is that the operand is a signed 8-bit integer
                 // Need to check if representation is the same as within rust's primitive types
                 // If so, we can transmute to i8 and do the addition
-                self.address_line = (self.next() as u16) + self.PC;
+                self.alu.carry_in = false;
+                self.alu.adc(self.next_opcode, (self.PC & 0xff) as u8);
+                let low = self.alu.output;
+                self.alu.carry_in = self.alu.carry_out;
+                // Sign extend the 8 bit signed offset
+                let a = match self.next_opcode & 0x80 {
+                    0x80 => 0xff,
+                    _    => 0x00
+                };
+                self.alu.adc(a, (self.PC >> 8) as u8);
+                let high = self.alu.output;
+                self.address_line = ((high as u16) << 8) | (low as u16);
             },
             Absolute => {
                 // Operand is a 16-bit instruction
 
                 // Little-endian read
-                let low = self.next(); let high = self.next();
+                let low = self.next_opcode; let high = self.next();
                 self.address_line = ((high as u16) << 8) | (low as u16);
             },
             AbsoluteX => {
@@ -429,19 +552,19 @@ impl CPU {
                 // So when a page boundary is crossed, effectively this takes an extra cycle.
 
                 // Little-endian read
-                let low = self.next(); let high = self.next();
+                let low = self.next_opcode; let high = self.next();
                 let load_location = ((high as u16) << 8) | (low as u16);
                 self.address_line = load_location.saturating_add(self.registers.X as u16);
             },
             AbsoluteY => {
                 // Exactly like (Absolute,X) addressing, but uses the Y register as the index
-                let low = self.next(); let high = self.next();
+                let low = self.next_opcode; let high = self.next();
                 let load_location = ((high as u16) << 8) | (low as u16);
                 self.address_line =  load_location.saturating_add(self.registers.Y as u16);
             },
             Indirect => {
                 // The immediate 16-bit operand points to the memory location of the effective address!
-                let low = self.next(); let high = self.next();
+                let low = self.next_opcode; let high = self.next();
                 let indirect = ((high as u16) << 8) | (low as u16);
                 let low = self.memory.read_byte(indirect);
                 let high = self.memory.read_byte(indirect.wrapping_add(1));
@@ -452,7 +575,7 @@ impl CPU {
                 // This is a pointer to the zero page
                 // It points to the LSB of the effective address, and the next location in the zero page points to 
                 // the MSB of the effective address
-                let indirect = self.next();
+                let indirect = self.next_opcode;
                 let pointer = indirect.wrapping_add(self.registers.X) as u16;
                 let low = self.memory.read_byte(pointer);
                 let high = self.memory.read_byte(pointer.wrapping_add(1));
@@ -467,7 +590,7 @@ impl CPU {
                 //
                 // So essentially the effective address is the 16-bit number pointed to in the zero page
                 // added to the Y register.
-                let pointer = self.next() as u16;
+                let pointer = self.next_opcode as u16;
                 let low = self.memory.read_byte(pointer);
                 let high = self.memory.read_byte(pointer.wrapping_add(1));
                 self.address_line = (((high as u16) << 8) | (low as u16)).wrapping_add(self.registers.Y as u16);

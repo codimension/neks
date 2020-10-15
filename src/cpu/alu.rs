@@ -14,6 +14,7 @@ pub(crate) enum Op {
     Dec,
     Eor,
     Inc,
+    Lsr,
     Or,
     Rol,
     Ror,
@@ -75,7 +76,7 @@ impl ALU {
     }
 
     #[inline]
-    fn adc(&mut self, a: u8, b: u8) {
+    pub fn adc(&mut self, a: u8, b: u8) {
         let (value, carry, overflow) = adc(a, b, self.carry_in);
         self.carry_out = carry;
         self.overflow_out = overflow;
@@ -125,6 +126,11 @@ impl ALU {
             },
             Op::Eor => {
                 self.output = self.input_a ^ self.input_b;
+            },
+            Op::Lsr => {
+                let (value, carry) = self.input_a.overflowing_shr(1);
+                self.output = value;
+                self.carry_out = carry;
             },
             Op::Inc => {
                 self.adc(self.input_a, 1);
