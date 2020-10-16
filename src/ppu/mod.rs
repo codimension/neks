@@ -60,6 +60,10 @@ impl PPU {
         }
     }
 
+    pub fn step(&mut self) {
+        
+    }
+
     pub fn read_status(&mut self) -> u8 {
         // When this is read, the Vblank bit is set to 0
         self.status.remove(StatusRegister::VBLANK);

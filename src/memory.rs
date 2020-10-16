@@ -1,3 +1,6 @@
+use std::rc::Rc;
+use std::cell::RefCell;
+
 use crate::ines::Cartridge;
 use crate::ppu::PPU;
 
@@ -6,15 +9,15 @@ pub(crate) struct MemoryBus {
     /// 2kb of RAM
     memory: [u8; 2048],
     rom_data: [u8; 32768],
-    ppu: PPU,
+    ppu: Rc<RefCell<PPU>>,
 }
 
 impl MemoryBus {
-    pub fn init() -> Self {
+    pub fn init(ppu: Rc<RefCell<PPU>>) -> Self {
         Self {
             memory: [0; 2048],
             rom_data: [0; 32768],
-            ppu: PPU::init(),
+            ppu: ppu,
         }
     }
 
@@ -32,13 +35,13 @@ impl MemoryBus {
             self.memory[address as usize - 0x1800]
         }
         else if address == 0x2002 {
-            self.ppu.read_status()
+            self.ppu.borrow_mut().read_status()
         }
         else if address == 0x2004 {
-            self.ppu.read_sprite_data()
+            self.ppu.borrow().read_sprite_data()
         }
         else if address == 0x2007 {
-            self.ppu.read_ppu_data()
+            self.ppu.borrow().read_ppu_data()
         }
         else if address >= 0x2008 && address < 0x4000 {
             self.read_byte(0x2000 + ((address - 0x2000) % 8))
@@ -65,14 +68,14 @@ impl MemoryBus {
         else if address >= 0x2000 && address < 0x2008 {
             // Handle writing to PPU registers
             match address {
-                0x2000 => self.ppu.write_cr1(value),
-                0x2001 => self.ppu.write_cr2(value),
+                0x2000 => self.ppu.borrow_mut().write_cr1(value),
+                0x2001 => self.ppu.borrow_mut().write_cr2(value),
                 0x2002 => (), // Read-only
-                0x2003 => self.ppu.write_sprite_address(value),
-                0x2004 => self.ppu.write_sprite_data(value),
-                0x2005 => self.ppu.write_ppu_scroll(value),
-                0x2006 => self.ppu.write_ppu_address(value),
-                0x2007 => self.ppu.write_ppu_data(value),
+                0x2003 => self.ppu.borrow_mut().write_sprite_address(value),
+                0x2004 => self.ppu.borrow_mut().write_sprite_data(value),
+                0x2005 => self.ppu.borrow_mut().write_ppu_scroll(value),
+                0x2006 => self.ppu.borrow_mut().write_ppu_address(value),
+                0x2007 => self.ppu.borrow_mut().write_ppu_data(value),
                 _ => (), // Not reachable
             }
         }

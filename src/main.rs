@@ -1,6 +1,8 @@
 const VERSION: i64 = 1;
 
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::cell::RefCell;
 use structopt::StructOpt;
 
 use sdl2::event::Event;
@@ -9,6 +11,7 @@ use sdl2::keyboard::Keycode;
 use neks::ines::RomFileParser;
 // TODO: Create type within ines for this. User of the emulation lib shouldn't have to know about nom
 use neks::cpu::CPU;
+use neks::ppu::PPU;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "neks", about = "NES emulator")]
@@ -29,7 +32,8 @@ fn main() -> Result<(), String> {
                     .map(|(_remaining, cartridge)| cartridge)
                     .unwrap();
 
-    let mut cpu = CPU::init(cartridge);
+    let ppu = Rc::new(RefCell::new(PPU::init()));
+    let mut cpu = CPU::init(cartridge, ppu.clone());
 
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
@@ -55,6 +59,7 @@ fn main() -> Result<(), String> {
         }
 
         cpu.step();
+        ppu.borrow_mut().step();
 
         canvas.clear();
         canvas.present();

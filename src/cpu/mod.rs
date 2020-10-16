@@ -1,11 +1,15 @@
-use std::convert::TryInto;
-
 mod instructions;
 mod register;
 mod alu;
 
+use std::convert::TryInto;
+use std::rc::Rc;
+use std::cell::RefCell;
+
 use crate::ines::Cartridge;
 use crate::memory::MemoryBus;
+use crate::ppu::PPU;
+
 
 use register::{Flags, Registers};
 use instructions::{AddressMode, Instruction};
@@ -31,13 +35,13 @@ pub struct CPU {
 }
 
 impl CPU {
-    pub fn init(cartridge: Cartridge) -> Self {
+    pub fn init(cartridge: Cartridge, ppu: Rc<RefCell<PPU>>) -> Self {
         let mut cpu = Self {
             registers: Registers::init(),
             PC: 0,
 
             clock: 0,
-            memory: MemoryBus::init(),
+            memory: MemoryBus::init(ppu),
             cartridge: cartridge,
             alu: ALU::new(),
 
