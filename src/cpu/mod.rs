@@ -68,23 +68,26 @@ impl CPU {
                 self.registers.Y
             );
         while self.is_running {
-            self.opcode = self.next();
-            // The 6502 always read two bytes at a time.
-            self.next_opcode = self.next();
-            println!("{:x} {:x}", self.opcode, self.next_opcode);
-            println!("{:x}", self.PC);
-            let instruction = instructions::decode(self.opcode);
-            println!("{:x}> {:?}", self.PC, instruction);
-            self.execute(instruction);
-            println!("A: {}, S: {}, X: {}, Y: {},",
-                self.registers.A,
-                self.registers.S,
-                self.registers.X,
-                self.registers.Y
-            );
-            println!()
+            self.step();
         }
     }
+
+    pub fn step(&mut self) {
+        let pc = self.PC;
+        self.opcode = self.next();
+        // The 6502 always read two bytes at a time.
+        self.next_opcode = self.next();
+        let instruction = instructions::decode(self.opcode);
+        println!("{:x}: {:x} {:x}> {:?}", pc, self.opcode, self.next_opcode, instruction);
+        self.execute(instruction);
+        println!("A: {}, S: {}, X: {}, Y: {},",
+            self.registers.A,
+            self.registers.S,
+            self.registers.X,
+            self.registers.Y
+        );
+    }
+
 
     #[inline]
     pub fn tick(&mut self) {
@@ -124,7 +127,7 @@ impl CPU {
     fn load_alu_input_b(&mut self, address_mode: AddressMode) {
         match address_mode {
             Immediate => {
-                self.alu.input_b = self.next();
+                self.alu.input_b = self.next_opcode;
             },              
             Accumulator => {
                 self.alu.input_b = self.registers.A;
@@ -140,7 +143,7 @@ impl CPU {
     fn load_alu_input_a(&mut self, address_mode: AddressMode) {
         match address_mode {
             Immediate => {
-                self.alu.input_a = self.next();
+                self.alu.input_a = self.next_opcode;
             },              
             Accumulator => {
                 self.alu.input_a = self.registers.A;
@@ -259,18 +262,21 @@ impl CPU {
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
                 self.registers.P = flags;
                 self.memory.write_byte(self.address_line, value);
+                self.prev();
             },
             DEX => {
                 self.alu.input_a = self.registers.X;
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
                 self.registers.P = flags;
                 self.registers.X = value;
+                self.prev();
             },
             DEY => {
                 self.alu.input_a = self.registers.Y;
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
                 self.registers.P = flags;
                 self.registers.Y = value;
+                self.prev();
             },
             EOR(address_mode) => {
                 self.load_alu_input_b(address_mode);
@@ -282,18 +288,21 @@ impl CPU {
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
                 self.registers.P = flags;
                 self.memory.write_byte(self.address_line, value);
+                self.prev();
             },
             INX => {
                 self.alu.input_a = self.registers.X;
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
                 self.registers.P = flags;
                 self.registers.X = value;
+                self.prev();
             },
             INY => {
                 self.alu.input_a = self.registers.Y;
                 let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
                 self.registers.P = flags;
                 self.registers.Y = value;
+                self.prev();
             },
             JMP(address_mode) => self.jmp(address_mode),
             JSR => {
@@ -480,14 +489,21 @@ impl CPU {
 
     #[inline]
     fn load(&mut self, address_mode: AddressMode) -> u8 {
-        match address_mode {
+        let value = match address_mode {
             Accumulator => self.registers.A,
             Immediate   => self.next_opcode,
             _ => {        
                 self.calculate_address(address_mode);
                 self.memory.read_byte(self.address_line)
             },
+        };
+        if value == 0 {
+            self.registers.P.insert(Flags::Z);
         }
+        if value & 0x80 == 0x80 {
+            self.registers.P.insert(Flags::N);
+        }
+        value
     }
 
     #[inline]
