@@ -15,7 +15,7 @@ use register::{Flags, Registers};
 use instructions::{AddressMode, Instruction};
 use instructions::AddressMode::*;
 use instructions::Instruction::*;
-use alu::ALU;
+use alu::*;
 
 #[allow(non_snake_case)]
 pub struct CPU {
@@ -24,7 +24,6 @@ pub struct CPU {
 
     memory: MemoryBus,   
     cartridge: Cartridge,
-    alu: ALU,
 
     clock: u16,
     address_line: u16,
@@ -43,7 +42,6 @@ impl CPU {
             clock: 0,
             memory: MemoryBus::init(ppu),
             cartridge: cartridge,
-            alu: ALU::new(),
 
             address_line: 0,
             is_running: false,
@@ -116,45 +114,17 @@ impl CPU {
     }
 
     #[inline]
-    fn do_accumulator_arithmetic(&mut self, op: alu::Op) {
-        // Assumes that alu.input has been set
-        self.alu.input_a = self.registers.A;
-        self.alu.flags = self.registers.P;
-        
-        let (output, flags) = self.alu.do_arithmetic(op);
-
-        self.registers.A = output;
-        self.registers.P = flags;
-    }
-
-    #[inline]
-    fn load_alu_input_b(&mut self, address_mode: AddressMode) {
+    fn load_input(&mut self, address_mode: AddressMode) -> u8 {
         match address_mode {
             Immediate => {
-                self.alu.input_b = self.next_opcode;
+                self.next_opcode
             },              
             Accumulator => {
-                self.alu.input_b = self.registers.A;
-            }
-            _=> {
-                self.calculate_address(address_mode);
-                self.alu.input_b = self.memory.read_byte(self.address_line);
-            }
-        }
-    }
-
-    #[inline]
-    fn load_alu_input_a(&mut self, address_mode: AddressMode) {
-        match address_mode {
-            Immediate => {
-                self.alu.input_a = self.next_opcode;
-            },              
-            Accumulator => {
-                self.alu.input_a = self.registers.A;
+                self.registers.A
             },
             _=> {
                 self.calculate_address(address_mode);
-                self.alu.input_a = self.memory.read_byte(self.address_line);
+                self.memory.read_byte(self.address_line)
             }
         }
     }
@@ -163,21 +133,23 @@ impl CPU {
     fn execute(&mut self, instruction: Instruction) {
         match instruction {
             ADC(address_mode) => {
-                self.load_alu_input_b(address_mode);
-                self.do_accumulator_arithmetic(alu::Op::Adc);
+                let carry_in = self.registers.P.contains(Flags::C);
+                let (value, carry, overflow) = alu::adc(self.registers.A, self.load_input(address_mode), carry_in);
+                self.registers.A = value;
+                self.update_flags_ZNCV(value, carry, overflow);
             },
-            AND(address_mode) => {
-                self.load_alu_input_b(address_mode);
-                self.do_accumulator_arithmetic(alu::Op::And);
+            AND(address_mode) => {               
+                let value = alu::and(self.registers.A, self.load_input(address_mode));
+                self.registers.A = value;
+                self.update_flags_ZN(value);
             },
             ASL(address_mode) => {
-                self.load_alu_input_a(address_mode);
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Asl);
+                let (value, carry) = asl(self.load_input(address_mode));
+                self.update_flags_ZNC(value, carry);
                 match address_mode {
                     Accumulator => self.registers.A = value,
                     _ => self.memory.write_byte(self.address_line, value),
                 }
-                self.registers.P = flags;
             },
             BCC => {
                 if !self.registers.P.contains(Flags::C) {
@@ -200,10 +172,11 @@ impl CPU {
                 // Then the zero flags tells you if the bit was not set
                 // So zero flag not being set tells an application that the bit _was_ set
                 // We then set the V and C flags depending on the values in bits 6 and 7 of the memory value
-                self.alu.input_a = self.registers.A;
-                self.load_alu_input_b(address_mode);
-                self.alu.do_arithmetic(alu::Op::And);
-                let memory_value = Flags::from(self.alu.input_b) & (Flags::V | Flags::C);
+
+                let input = self.load_input(address_mode);
+                let value = alu::and(self.registers.A, self.load_input(address_mode));
+                self.registers.P.remove(Flags::V | Flags::C);
+                let memory_value = Flags::from(input) & (Flags::V | Flags::C);
                 self.registers.P.insert(memory_value);
             },
             BMI => {
@@ -244,68 +217,56 @@ impl CPU {
                 self.prev(); // One byte instruction
             },
             CMP(address_mode) => {
-                self.alu.input_a = self.registers.A;
-                self.load_alu_input_b(address_mode);
-                let (_, flags) = self.alu.do_arithmetic(alu::Op::Cmp);
-                self.registers.P = flags;
+                let (value, carry) = alu::cmp(self.registers.A, self.load_input(address_mode));
+                self.update_flags_ZNC(value, carry);
             },
             CPX(address_mode) => {
-                self.alu.input_a = self.registers.X;
-                self.load_alu_input_b(address_mode);
-                let (_, flags) = self.alu.do_arithmetic(alu::Op::Cmp);
-                self.registers.P = flags;
+                let (value, carry) = alu::cmp(self.registers.X, self.load_input(address_mode));
+                self.update_flags_ZNC(value, carry);
             },
             CPY(address_mode) => {
-                self.alu.input_a = self.registers.Y;
-                self.load_alu_input_b(address_mode);
-                let (_, flags) = self.alu.do_arithmetic(alu::Op::Cmp);
-                self.registers.P = flags;
+                let (value, carry) = alu::cmp(self.registers.Y, self.load_input(address_mode));
+                self.update_flags_ZNC(value, carry);
             },
             DEC(address_mode) => {
-                self.load_alu_input_a(address_mode);
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
-                self.registers.P = flags;
+                let value = alu::dec(self.load_input(address_mode));
+                self.update_flags_ZN(value);
                 self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             DEX => {
-                self.alu.input_a = self.registers.X;
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
-                self.registers.P = flags;
-                self.registers.X = value;
+                let value = alu::dec(self.registers.X);
+                self.update_flags_ZN(value);
+                self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             DEY => {
-                self.alu.input_a = self.registers.Y;
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Dec);
-                self.registers.P = flags;
-                self.registers.Y = value;
+                let value = alu::dec(self.registers.Y);
+                self.update_flags_ZN(value);
+                self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             EOR(address_mode) => {
-                self.load_alu_input_b(address_mode);
-                self.do_accumulator_arithmetic(alu::Op::Eor);
+                let value = alu::eor(self.registers.A, self.load_input(address_mode));
+                self.update_flags_ZN(value);
+                self.registers.A = value;
             },
             INC(address_mode) => {
-                //TODO: need to store
-                self.load_alu_input_a(address_mode);
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
-                self.registers.P = flags;
+                let value = alu::inc(self.load_input(address_mode));
+                self.update_flags_ZN(value);
                 self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             INX => {
-                self.alu.input_a = self.registers.X;
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
-                self.registers.P = flags;
-                self.registers.X = value;
+                let value = alu::inc(self.registers.X);
+                self.update_flags_ZN(value);
+                self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             INY => {
-                self.alu.input_a = self.registers.Y;
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Inc);
-                self.registers.P = flags;
-                self.registers.Y = value;
+                let value = alu::inc(self.registers.Y);
+                self.update_flags_ZN(value);
+                self.memory.write_byte(self.address_line, value);
                 self.prev();
             },
             JMP(address_mode) => self.jmp(address_mode),
@@ -326,16 +287,17 @@ impl CPU {
                 self.registers.Y = self.load(address_mode);
             },
             LSR(address_mode) => {
-                self.load_alu_input_a(address_mode);
-                self.alu.do_arithmetic(alu::Op::Lsr);
+                let (value, carry) = alu::lsr(self.load_input(address_mode));
+                self.update_flags_ZNC(value, carry);
                 match address_mode {
-                    Accumulator => self.registers.A = self.alu.output,
-                    _ => self.memory.write_byte(self.address_line, self.alu.output),
+                    Accumulator => self.registers.A = value,
+                    _ => self.memory.write_byte(self.address_line, value),
                 }
             },
             ORA(address_mode) => {
-                self.load_alu_input_b(address_mode);
-                self.do_accumulator_arithmetic(alu::Op::Or);
+                let value = alu::or(self.registers.A, self.load_input(address_mode));
+                self.update_flags_ZN(value);
+                self.registers.A = value;
             },
             NOP => {
 
@@ -353,22 +315,24 @@ impl CPU {
                 self.registers.P = Flags::from(self.pull());
             },
             ROL(address_mode) => {
-                self.load_alu_input_a(address_mode);
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Rol);
+                let carry_in = self.registers.P.contains(Flags::C);
+                let (value, carry) = alu::rol(self.load_input(address_mode), carry_in);
+                self.update_flags_ZNC(value, carry);
+
                 match address_mode {
                     Accumulator => self.registers.A = value,
                     _ => self.memory.write_byte(self.address_line, value),
                 }
-                self.registers.P = flags;
             },
             ROR(address_mode) => {
-                self.load_alu_input_a(address_mode);
-                let (value, flags) = self.alu.do_arithmetic(alu::Op::Ror);
+                let carry_in = self.registers.P.contains(Flags::C);
+                let (value, carry) = alu::ror(self.load_input(address_mode), carry_in);
+                self.update_flags_ZNC(value, carry);
+
                 match address_mode {
                     Accumulator => self.registers.A = value,
                     _ => self.memory.write_byte(self.address_line, value),
                 }
-                self.registers.P = flags;
             },
             RTI => {
                 self.registers.P = Flags::from(self.pull());
@@ -380,8 +344,10 @@ impl CPU {
                 self.PC = self.pull16();
             },
             SBC(address_mode) => {
-                self.load_alu_input_b(address_mode);
-                self.do_accumulator_arithmetic(alu::Op::Sbc);
+                let carry_in = self.registers.P.contains(Flags::C);
+                let (value, carry, overflow) = alu::sbc(self.registers.A, self.load_input(address_mode), carry_in);
+                self.registers.A = value;
+                self.update_flags_ZNCV(value, carry, overflow);
             },
             SET(flag) => {
                 self.registers.P.insert(flag);
@@ -442,38 +408,26 @@ impl CPU {
     #[inline]
     fn push(&mut self, value: u8) {
         self.memory.write_byte(self.registers.S as u16, value);
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Dec);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::dec(self.registers.S);
     }
 
     fn push16(&mut self, value: u16) {
         self.memory.write_byte(self.registers.S as u16, (value >> 8).try_into().unwrap());
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Dec);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::dec(self.registers.S);
         self.memory.write_byte(self.registers.S as u16, (value & 0xff).try_into().unwrap());
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Dec);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::dec(self.registers.S);
     }
 
     #[inline]
     fn pull(&mut self) -> u8 {
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Inc);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::inc(self.registers.S);
         self.memory.read_byte(self.registers.S as u16)
     }
 
     fn pull16(&mut self) -> u16 {
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Inc);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::inc(self.registers.S);
         let low = self.memory.read_byte(self.registers.S as u16);
-        self.alu.input_a = self.registers.S;
-        self.alu.do_arithmetic(alu::Op::Inc);
-        self.registers.S = self.alu.output;
+        self.registers.S = alu::inc(self.registers.S);
         let high = self.memory.read_byte(self.registers.S as u16);
         ((high as u16) << 8) | (low as u16)
     }
@@ -511,6 +465,22 @@ impl CPU {
     }
 
     #[inline]
+    fn update_flags_ZNCV(&mut self, value: u8, carry: bool, overflow: bool) {
+        self.update_flags_ZNC(value, carry);
+        self.registers.P.set(Flags::V, overflow);
+    }
+    #[inline]
+    fn update_flags_ZNC(&mut self, value: u8, carry: bool) {
+        self.update_flags_ZN(value);
+        self.registers.P.set(Flags::C, carry);
+    }
+    #[inline]
+    fn update_flags_ZN(&mut self, value: u8) {
+        self.registers.P.set(Flags::Z, value == 0);
+        self.registers.P.set(Flags::N, value & 0x80 == 0x80);
+    }
+
+    #[inline]
     fn calculate_address(&mut self, address_mode: AddressMode) {
         match address_mode {
             Accumulator => {
@@ -538,20 +508,13 @@ impl CPU {
                 self.address_line = self.next_opcode.wrapping_add(self.registers.Y) as u16;
             },
             Relative => {
-                // TODO: This is wrong. What actually happens is that the operand is a signed 8-bit integer
-                // Need to check if representation is the same as within rust's primitive types
-                // If so, we can transmute to i8 and do the addition
-                self.alu.carry_in = false;
-                self.alu.adc(self.next_opcode, (self.PC & 0xff) as u8);
-                let low = self.alu.output;
-                self.alu.carry_in = self.alu.carry_out;
+                let (low, carry, _) = alu::adc(self.next_opcode, (self.PC & 0xff) as u8, false);
                 // Sign extend the 8 bit signed offset
                 let a = match self.next_opcode & 0x80 {
                     0x80 => 0xff,
                     _    => 0x00
                 };
-                self.alu.adc(a, (self.PC >> 8) as u8);
-                let high = self.alu.output;
+                let (high, _, _) = alu::adc(a, (self.PC >> 8) as u8, carry);
                 self.address_line = ((high as u16) << 8) | (low as u16);
             },
             Absolute => {
