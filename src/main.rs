@@ -9,7 +9,6 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 
 use neks::ines::RomFileParser;
-// TODO: Create type within ines for this. User of the emulation lib shouldn't have to know about nom
 use neks::cpu::CPU;
 use neks::ppu::PPU;
 
