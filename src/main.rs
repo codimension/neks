@@ -10,7 +10,6 @@ use sdl2::keyboard::Keycode;
 
 use neks::ines::RomFileParser;
 use neks::cpu::CPU;
-use neks::ppu::PPU;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "neks", about = "NES emulator")]
@@ -31,8 +30,7 @@ fn main() -> Result<(), String> {
                     .map(|(_remaining, cartridge)| cartridge)
                     .unwrap();
 
-    let ppu = Rc::new(RefCell::new(PPU::init()));
-    let mut cpu = CPU::init(cartridge, ppu.clone());
+    let mut cpu = CPU::init(cartridge);
 
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
@@ -58,7 +56,7 @@ fn main() -> Result<(), String> {
         }
 
         cpu.step();
-        ppu.borrow_mut().step();
+        // Want to render here
 
         canvas.clear();
         canvas.present();

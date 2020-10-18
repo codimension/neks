@@ -1,100 +1,116 @@
-use bitflags::*;
+mod memory;
+mod register;
 
-bitflags! {
-    struct ControlRegister1: u8 {
-        const BASE_TABLE = 0b00000011;
-        const VRAM_INC = 0b00000100;
-        const BACKGROUND_PATTERN = 0b00001000;
-        const SPRITE_PATTERN = 0b00010000;
-        const SPRITE_SIZE = 0b00100000;
-        const NMI_INTERRUPTS = 0b10000000;
-    }
-}
-
-bitflags! {
-    struct ControlRegister2: u8 {
-        const BW = 0b00000001;
-        const BACKGROUND_CLIPPING = 0b00000010;
-        const SPRITE_CLIPPING = 0b000000100;
-        const BACKGROUND_RENDERING = 0b00010000;
-        const SPRITE_RENDERING = 0b00100000;
-        const INTENSIFY_RED = 0b00100000;
-        const INTENSIFY_GREEN = 0b01000000;
-        const INTENSIFY_BLUE = 0b10000000;
-    }
-}
-
-bitflags! {
-    struct StatusRegister: u8 {
-        const SPRITE0 = 0b00100000;
-        const MAX_SPRITES_SCANLINE = 0b01000000;
-        const VBLANK = 0b10000000;
-    }
-}
-
+use memory::GraphicsMemory;
+use register::RegisterBank;
 
 pub struct PPU {
     // PPU Registers - MemoryBus accesses these
     // Therefore visible to CPU through certain memory addresses
-    cr1: ControlRegister1,
-    cr2: ControlRegister2,
-    status: StatusRegister,
-    sprite_address: u8,
-    sprite_data: u8,
-    ppu_scroll: u8,
-    ppu_address: u8,
-    ppu_data: u8,
+    registers: RegisterBank,
+
+    framebuffer: [u8; 1000],
+
+    oam_address: u8,
+    oam_data: [u8; 0x100],
+    memory: GraphicsMemory,
+
+    cpu_cycles: u16,
+    scanline: u16,
+    cycles: u16,
 }
 
 impl PPU {
     pub fn init() -> Self {
         Self {
-            cr1: ControlRegister1::from_bits_truncate(0),
-            cr2: ControlRegister2::from_bits_truncate(0),
-            status: StatusRegister::from_bits_truncate(0),
-            sprite_address: 0,
-            sprite_data: 0,
-            ppu_scroll: 0,
-            ppu_address: 0,
-            ppu_data: 0,
+            registers: RegisterBank::init(),
+
+            framebuffer: [0; 1000],
+
+            cpu_cycles: 0,
+
+            oam_address: 0,
+            oam_data: [0xff; 0x100],
+            memory: GraphicsMemory::init(),
+
+            scanline: 0,
+            cycles: 0,
+        }
+    }
+
+    pub fn read_register(&mut self, address: u8) -> u8 {
+        match address {
+            2 => self.registers.read_status(),
+            4 => self.registers.read_sprite_data(),
+            7 => self.registers.read_ppu_data(),
+            _ => 0, // Invalid read | TODO: Find out if this needs to be handled
         }
     }
 
     pub fn step(&mut self) {
-        
+        let (cpu_cycles, _) = self.cpu_cycles.overflowing_add(1);
+        self.cpu_cycles = cpu_cycles;
+        self.tick(); self.tick(); self.tick();
+        if self.cpu_cycles % 5 == 0 {
+            self.tick();
+        } // PAL timing: 3.2 PPU ticks for every CPU tick
     }
 
-    pub fn read_status(&mut self) -> u8 {
-        // When this is read, the Vblank bit is set to 0
-        self.status.remove(StatusRegister::VBLANK);
-        self.status.bits
-    }
-    pub fn read_sprite_data(&self) -> u8 {
-        self.sprite_data
-    }
-    pub fn read_ppu_data(&self) -> u8 {
-        self.ppu_data
+    fn tick(&mut self) {
+        match self.scanline {
+            x if x < 240 => {
+                match self.cycles {
+                    0 => (), // Idle
+                    _ => (),
+                }
+            }
+            241 => self.registers.set_vblank(),
+            _ => (),
+        }
+        if self.cycles == 340 {
+            self.cycles = 0;
+            if self.scanline == 310 {
+                self.scanline = 0;
+            } 
+            else {
+                self.scanline += 1;
+            }
+        }
+        else {
+            self.cycles += 1;
+        }
+
     }
 
-    pub fn write_cr1(&mut self, bits: u8) {
-        self.cr1 = ControlRegister1::from_bits_truncate(bits);
+    pub fn write_register(&mut self, address: u8, value: u8) {
+        match address {
+            0 => self.registers.write_cr1(value),
+            1 => self.registers.write_cr2(value),
+            2 => (), // Read-only
+            3 => self.registers.write_sprite_address(value),
+            4 => self.registers.write_sprite_data(value),
+            5 => self.registers.write_ppu_scroll(value),
+            6 => self.registers.write_ppu_address(value),
+            7 => self.registers.write_ppu_data(value),
+            _ => panic!("Invalid write to PPU register!"),
+        }
     }
-    pub fn write_cr2(&mut self, bits: u8) {
-        self.cr2 = ControlRegister2::from_bits_truncate(bits);
+
+
+    pub fn write_oam_address(&mut self, address: u8) {
+        self.oam_address = address;
     }
-    pub fn write_sprite_address(&mut self, bits: u8) {
-        self.sprite_address = bits;
+
+    pub fn write_oam_data(&mut self, data: u8) {
+        self.oam_data[self.oam_address as usize] = data;
+        self.oam_address = self.oam_address.wrapping_add(1);
     }
-    pub fn write_sprite_data(&mut self, bits: u8) {
-        self.sprite_data = bits;
-    }
-    pub fn write_ppu_scroll(&mut self, bits: u8) {
-        self.ppu_scroll = bits;
-    }
-    pub fn write_ppu_address(&mut self, bits: u8) {
-        self.ppu_address = bits;
-    }
-    pub fn write_ppu_data(&mut self, bits: u8) {
-        self.ppu_data = bits;
-    }
+}
+
+struct Tile {
+
+}
+
+struct Sprite {
+
 }

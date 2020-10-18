@@ -3,48 +3,49 @@ mod register;
 mod alu;
 
 use std::convert::TryInto;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 use crate::ines::Cartridge;
 use crate::memory::MemoryBus;
-use crate::ppu::PPU;
 
-
-use register::{Flags, Registers};
+use register::{Flags, RegisterBank};
 use instructions::{AddressMode, Instruction};
 use instructions::AddressMode::*;
 use instructions::Instruction::*;
 use alu::*;
 
+#[inline]
+fn le_address_16(low: u8, high: u8) -> u16 {
+    ((high as u16) << 8) | (low as u16)
+}
+
 #[allow(non_snake_case)]
 pub struct CPU {
-    registers: Registers,
+    registers: RegisterBank,
     PC: u16,
 
     memory: MemoryBus,   
     cartridge: Cartridge,
 
-    clock: u16,
-    address_line: u16,
     is_running: bool,
+
+    address_line: u16,
 
     opcode: u8,
     next_opcode: u8,
 }
 
 impl CPU {
-    pub fn init(cartridge: Cartridge, ppu: Rc<RefCell<PPU>>) -> Self {
+    pub fn init(cartridge: Cartridge) -> Self {
         let mut cpu = Self {
-            registers: Registers::init(),
+            registers: RegisterBank::init(),
             PC: 0,
 
-            clock: 0,
-            memory: MemoryBus::init(ppu),
+            memory: MemoryBus::init(),
             cartridge: cartridge,
 
-            address_line: 0,
             is_running: false,
+
+            address_line: 0,
 
             opcode: 0,
             next_opcode: 0,
@@ -63,11 +64,12 @@ impl CPU {
 
     pub fn run(&mut self) -> () {
         self.is_running = true;
-        println!("A: {}, S: {}, X: {}, Y: {},",
+        println!("A: {}, S: {}, X: {}, Y: {}, P: {:b}",
                 self.registers.A,
                 self.registers.S,
                 self.registers.X,
-                self.registers.Y
+                self.registers.Y,
+                self.registers.P.bits(),
             );
         while self.is_running {
             self.step();
@@ -80,20 +82,17 @@ impl CPU {
         // The 6502 always read two bytes at a time.
         self.next_opcode = self.next();
         let instruction = instructions::decode(self.opcode);
-        println!("{:x}: {:x} {:x}> {:?}", pc, self.opcode, self.next_opcode, instruction);
+        //println!("{:x}: {:x} {:x}> {:?}", pc, self.opcode, self.next_opcode, instruction);
         self.execute(instruction);
-        println!("A: {}, S: {}, X: {}, Y: {},",
-            self.registers.A,
-            self.registers.S,
-            self.registers.X,
-            self.registers.Y
-        );
-    }
-
-
-    #[inline]
-    pub fn tick(&mut self) {
-        self.clock += 1;
+        /*
+        println!("A: {}, S: {}, X: {}, Y: {}, P: {:b}",
+                self.registers.A,
+                self.registers.S,
+                self.registers.X,
+                self.registers.Y,
+                self.registers.P.bits(),
+            );
+        */
     }
 
     #[inline]
@@ -108,9 +107,22 @@ impl CPU {
 
     #[inline]
     fn next(&mut self) -> u8 {
-        let ret = self.memory.read_byte(self.PC);
+        let ret = self.memory.read(self.PC);
         self.PC += 1;
         ret
+    }
+
+    // Handles common timing logic, fetching and storing of results,
+    // without maintaining any extra state
+    fn rmw<F>(&mut self, address_mode: AddressMode, mut action: F)
+        where F: FnMut(&mut CPU, u8) -> u8 
+    {
+        let input = self.load_input(address_mode);
+        let value = action(self, input);
+        match address_mode {
+            Accumulator => self.registers.A = value,
+            _ => self.memory.write(self.address_line, value),
+        }
     }
 
     #[inline]
@@ -124,7 +136,7 @@ impl CPU {
             },
             _=> {
                 self.calculate_address(address_mode);
-                self.memory.read_byte(self.address_line)
+                self.memory.read(self.address_line)
             }
         }
     }
@@ -148,7 +160,7 @@ impl CPU {
                 self.update_flags_ZNC(value, carry);
                 match address_mode {
                     Accumulator => self.registers.A = value,
-                    _ => self.memory.write_byte(self.address_line, value),
+                    _ => self.memory.write(self.address_line, value),
                 }
             },
             BCC => {
@@ -178,6 +190,7 @@ impl CPU {
                 self.registers.P.remove(Flags::V | Flags::C);
                 let memory_value = Flags::from(input) & (Flags::V | Flags::C);
                 self.registers.P.insert(memory_value);
+                self.update_flags_ZN(value);
             },
             BMI => {
                 if self.registers.P.contains(Flags::N) {
@@ -197,8 +210,8 @@ impl CPU {
             BRK => {
                 self.push(self.registers.P.into());
                 self.push16(self.PC);
-                let low = self.memory.read_byte(0xfffe);
-                let high = self.memory.read_byte(0xffff);
+                let low = self.memory.read(0xfffe_u16);
+                let high = self.memory.read(0xffff_u16);
                 self.PC = ((high as u16) << 8) & (low as u16);
                 self.registers.P.insert(Flags::B);
             },
@@ -231,19 +244,19 @@ impl CPU {
             DEC(address_mode) => {
                 let value = alu::dec(self.load_input(address_mode));
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             DEX => {
                 let value = alu::dec(self.registers.X);
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             DEY => {
                 let value = alu::dec(self.registers.Y);
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             EOR(address_mode) => {
@@ -254,19 +267,19 @@ impl CPU {
             INC(address_mode) => {
                 let value = alu::inc(self.load_input(address_mode));
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             INX => {
                 let value = alu::inc(self.registers.X);
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             INY => {
                 let value = alu::inc(self.registers.Y);
                 self.update_flags_ZN(value);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value);
                 self.prev();
             },
             JMP(address_mode) => self.jmp(address_mode),
@@ -291,7 +304,7 @@ impl CPU {
                 self.update_flags_ZNC(value, carry);
                 match address_mode {
                     Accumulator => self.registers.A = value,
-                    _ => self.memory.write_byte(self.address_line, value),
+                    _ => self.memory.write(self.address_line, value),
                 }
             },
             ORA(address_mode) => {
@@ -321,7 +334,7 @@ impl CPU {
 
                 match address_mode {
                     Accumulator => self.registers.A = value,
-                    _ => self.memory.write_byte(self.address_line, value),
+                    _ => self.memory.write(self.address_line, value),
                 }
             },
             ROR(address_mode) => {
@@ -331,7 +344,7 @@ impl CPU {
 
                 match address_mode {
                     Accumulator => self.registers.A = value,
-                    _ => self.memory.write_byte(self.address_line, value),
+                    _ => self.memory.write(self.address_line, value),
                 }
             },
             RTI => {
@@ -407,28 +420,28 @@ impl CPU {
 
     #[inline]
     fn push(&mut self, value: u8) {
-        self.memory.write_byte(self.registers.S as u16, value);
+        self.memory.write(self.registers.S as u16, value);
         self.registers.S = alu::dec(self.registers.S);
     }
 
     fn push16(&mut self, value: u16) {
-        self.memory.write_byte(self.registers.S as u16, (value >> 8).try_into().unwrap());
+        self.memory.write(self.registers.S as u16, (value >> 8).try_into().unwrap());
         self.registers.S = alu::dec(self.registers.S);
-        self.memory.write_byte(self.registers.S as u16, (value & 0xff).try_into().unwrap());
+        self.memory.write(self.registers.S as u16, (value & 0xff).try_into().unwrap());
         self.registers.S = alu::dec(self.registers.S);
     }
 
     #[inline]
     fn pull(&mut self) -> u8 {
         self.registers.S = alu::inc(self.registers.S);
-        self.memory.read_byte(self.registers.S as u16)
+        self.memory.read(self.registers.S as u16)
     }
 
     fn pull16(&mut self) -> u16 {
         self.registers.S = alu::inc(self.registers.S);
-        let low = self.memory.read_byte(self.registers.S as u16);
+        let low = self.memory.read(self.registers.S as u16);
         self.registers.S = alu::inc(self.registers.S);
-        let high = self.memory.read_byte(self.registers.S as u16);
+        let high = self.memory.read(self.registers.S as u16);
         ((high as u16) << 8) | (low as u16)
     }
 
@@ -440,7 +453,7 @@ impl CPU {
             Immediate   => panic!("Attempt to store to an immediate operand!"),
             _ => {        
                 self.calculate_address(address_mode);
-                self.memory.write_byte(self.address_line, value);
+                self.memory.write(self.address_line, value)
             },
         }
     }
@@ -452,29 +465,29 @@ impl CPU {
             Immediate   => self.next_opcode,
             _ => {        
                 self.calculate_address(address_mode);
-                self.memory.read_byte(self.address_line)
+                self.memory.read(self.address_line)
             },
         };
-        if value == 0 {
-            self.registers.P.insert(Flags::Z);
-        }
-        if value & 0x80 == 0x80 {
-            self.registers.P.insert(Flags::N);
-        }
+        self.update_flags_ZN(value);
         value
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn update_flags_ZNCV(&mut self, value: u8, carry: bool, overflow: bool) {
         self.update_flags_ZNC(value, carry);
         self.registers.P.set(Flags::V, overflow);
     }
+
     #[inline]
+    #[allow(non_snake_case)]
     fn update_flags_ZNC(&mut self, value: u8, carry: bool) {
         self.update_flags_ZN(value);
         self.registers.P.set(Flags::C, carry);
     }
+    
     #[inline]
+    #[allow(non_snake_case)]
     fn update_flags_ZN(&mut self, value: u8) {
         self.registers.P.set(Flags::Z, value == 0);
         self.registers.P.set(Flags::N, value & 0x80 == 0x80);
@@ -499,12 +512,14 @@ impl CPU {
                 // Take the zero page address given by the operand and add the value of the X register to it
                 // This result of this calculation is wrapping, so that if the value is greater than 0xff then
                 // any bits in the most significant byte will be zeroised so that the address remains a zero page one
+                self.memory.read(self.next_opcode as u16); // Dummy read
                 self.address_line = self.next_opcode.wrapping_add(self.registers.X) as u16;
             },
             ZeroPageY => {
                 // Take the zero page address given by the operand and add the value of the Y register to it
                 // This result of this calculation is wrapping, so that if the value is greater than 0xff then
                 // any bits in the most significant byte will be zeroised so that the address remains a zero page one
+                self.memory.read(self.next_opcode as u16); // Dummy read
                 self.address_line = self.next_opcode.wrapping_add(self.registers.Y) as u16;
             },
             Relative => {
@@ -515,14 +530,14 @@ impl CPU {
                     _    => 0x00
                 };
                 let (high, _, _) = alu::adc(a, (self.PC >> 8) as u8, carry);
-                self.address_line = ((high as u16) << 8) | (low as u16);
+                self.address_line = le_address_16(low, high);
             },
             Absolute => {
                 // Operand is a 16-bit instruction
 
                 // Little-endian read
                 let low = self.next_opcode; let high = self.next();
-                self.address_line = ((high as u16) << 8) | (low as u16);
+                self.address_line = le_address_16(low, high);
             },
             AbsoluteX => {
                 // Operand is a 16-bit address. The value of X is then added to the operand to get effective address
@@ -536,22 +551,28 @@ impl CPU {
 
                 // Little-endian read
                 let low = self.next_opcode; let high = self.next();
-                let load_location = ((high as u16) << 8) | (low as u16);
-                self.address_line = load_location.saturating_add(self.registers.X as u16);
+                let (new_low, carry, _) = alu::adc(low, self.registers.X, false);
+                let first_location = le_address_16(new_low, high);
+                self.memory.read(first_location);
+                let (new_high, _, _) = alu::adc(high, 0, carry);
+                self.address_line = le_address_16(new_low, new_high);
             },
             AbsoluteY => {
                 // Exactly like (Absolute,X) addressing, but uses the Y register as the index
                 let low = self.next_opcode; let high = self.next();
-                let load_location = ((high as u16) << 8) | (low as u16);
-                self.address_line =  load_location.saturating_add(self.registers.Y as u16);
+                let (new_low, carry, _) = alu::adc(low, self.registers.Y, false);
+                let first_location = le_address_16(new_low, high);
+                self.memory.read(first_location);
+                let (new_high, _, _) = alu::adc(high, 0, carry);
+                self.address_line = le_address_16(new_low, new_high);
             },
             Indirect => {
                 // The immediate 16-bit operand points to the memory location of the effective address!
                 let low = self.next_opcode; let high = self.next();
-                let indirect = ((high as u16) << 8) | (low as u16);
-                let low = self.memory.read_byte(indirect);
-                let high = self.memory.read_byte(indirect.wrapping_add(1));
-                self.address_line = ((high as u16) << 8) | (low as u16);
+                let indirect = le_address_16(low, high);
+                let low = self.memory.read(indirect);
+                let high = self.memory.read(indirect.wrapping_add(1));
+                self.address_line = le_address_16(low, high);
             },
             XIndirect => {
                 // Take an 8-bit operand and add to the X-register, discarding the carry
@@ -559,10 +580,11 @@ impl CPU {
                 // It points to the LSB of the effective address, and the next location in the zero page points to 
                 // the MSB of the effective address
                 let indirect = self.next_opcode;
+                self.memory.read(indirect as u16); //TODO: Really not sure on this. Only one source mentions it.
                 let pointer = indirect.wrapping_add(self.registers.X) as u16;
-                let low = self.memory.read_byte(pointer);
-                let high = self.memory.read_byte(pointer.wrapping_add(1));
-                self.address_line = ((high as u16) << 8) | (low as u16);
+                let low = self.memory.read(pointer);
+                let high = self.memory.read(pointer.wrapping_add(1));
+                self.address_line = le_address_16(low, high);
             },
             IndirectY => {
                 // The 8-bit operand points to a location in the zero page.
@@ -574,9 +596,12 @@ impl CPU {
                 // So essentially the effective address is the 16-bit number pointed to in the zero page
                 // added to the Y register.
                 let pointer = self.next_opcode as u16;
-                let low = self.memory.read_byte(pointer);
-                let high = self.memory.read_byte(pointer.wrapping_add(1));
-                self.address_line = (((high as u16) << 8) | (low as u16)).wrapping_add(self.registers.Y as u16);
+                let low = self.memory.read(pointer);
+                let high = self.memory.read(pointer.wrapping_add(1));
+                let (new_low, carry, _) = alu::adc(low, self.registers.Y, false);
+                self.memory.read(le_address_16(new_low, high));
+                let (new_high, _, _) = alu::adc(high, 0, carry);
+                self.address_line = le_address_16(new_low, new_high);
             },
         }
     }

@@ -4,7 +4,7 @@ use std::convert::From;
 // It's customary when dealing with hardware registers to use upper case
 #[allow(non_snake_case)]
 /// Register bank within the CPU
-pub(crate) struct Registers {
+pub(crate) struct RegisterBank {
     /// Accumulator register
     pub A: u8,
     /// X index register
@@ -17,7 +17,7 @@ pub(crate) struct Registers {
     pub P: Flags,
 }
 
-impl Registers {
+impl RegisterBank {
     pub fn init() -> Self {
         Self {
             A: 0,
